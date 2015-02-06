@@ -49,6 +49,7 @@
 #include "diagnostic_updater/DiagnosticStatusWrapper.h"
 
 #include "sensor_msgs/Imu.h"
+#include "geometry_msgs/Vector3Stamped.h"
 #include "std_srvs/Empty.h"
 
 #include "tf/transform_datatypes.h"
@@ -62,7 +63,8 @@ class ImuNode
 {
 public:
   microstrain_3dmgx2_imu::IMU imu;
-  sensor_msgs::Imu reading;
+  sensor_msgs::Imu imuReading;
+  geometry_msgs::Vector3Stamped magReading;
 
   string port;
 
@@ -74,6 +76,7 @@ public:
   ros::NodeHandle node_handle_;
   ros::NodeHandle private_node_handle_;
   ros::Publisher imu_data_pub_;
+  ros::Publisher imu_mag_pub_;
   ros::ServiceServer add_offset_serv_;
   ros::ServiceServer calibrate_serv_;
   ros::Publisher is_calibrated_pub_;
@@ -122,20 +125,22 @@ public:
 
 
     imu_data_pub_ = imu_node_handle.advertise<sensor_msgs::Imu>("data", 100);
+    imu_mag_pub_ = imu_node_handle.advertise<geometry_msgs::Vector3Stamped>("mag", 100);
     add_offset_serv_ = private_node_handle_.advertiseService("add_offset", &ImuNode::addOffset, this);
     calibrate_serv_ = imu_node_handle.advertiseService("calibrate", &ImuNode::calibrate, this);
     is_calibrated_pub_ = imu_node_handle.advertise<std_msgs::Bool>("is_calibrated", 1, true);
 
     publish_is_calibrated();
 
-    cmd = microstrain_3dmgx2_imu::IMU::CMD_ACCEL_ANGRATE_ORIENT;
+    cmd = microstrain_3dmgx2_imu::IMU::CMD_ACCEL_ANGRATE_MAG_ORIENT;
     
     running = false;
 
     bias_x_ = bias_y_ = bias_z_ = 0;
 
     private_node_handle_.param("frame_id", frameid_, string("imu"));
-    reading.header.frame_id = frameid_;
+    imuReading.header.frame_id = frameid_;
+    magReading.header.frame_id = frameid_;
 
     private_node_handle_.param("time_offset", offset_, 0.0);
 
@@ -147,17 +152,17 @@ public:
     double orientation_covariance = orientation_stdev_ * orientation_stdev_;
     double linear_acceleration_covariance = linear_acceleration_stdev_ * linear_acceleration_stdev_;
     
-    reading.linear_acceleration_covariance[0] = linear_acceleration_covariance;
-    reading.linear_acceleration_covariance[4] = linear_acceleration_covariance;
-    reading.linear_acceleration_covariance[8] = linear_acceleration_covariance;
+    imuReading.linear_acceleration_covariance[0] = linear_acceleration_covariance;
+    imuReading.linear_acceleration_covariance[4] = linear_acceleration_covariance;
+    imuReading.linear_acceleration_covariance[8] = linear_acceleration_covariance;
 
-    reading.angular_velocity_covariance[0] = angular_velocity_covariance;
-    reading.angular_velocity_covariance[4] = angular_velocity_covariance;
-    reading.angular_velocity_covariance[8] = angular_velocity_covariance;
+    imuReading.angular_velocity_covariance[0] = angular_velocity_covariance;
+    imuReading.angular_velocity_covariance[4] = angular_velocity_covariance;
+    imuReading.angular_velocity_covariance[8] = angular_velocity_covariance;
     
-    reading.orientation_covariance[0] = orientation_covariance;
-    reading.orientation_covariance[4] = orientation_covariance;
-    reading.orientation_covariance[8] = orientation_covariance;
+    imuReading.orientation_covariance[0] = orientation_covariance;
+    imuReading.orientation_covariance[4] = orientation_covariance;
+    imuReading.orientation_covariance[8] = orientation_covariance;
     
     self_test_.add("Close Test", this, &ImuNode::pretest);
     self_test_.add("Interruption Test", this, &ImuNode::InterruptionTest);
@@ -321,7 +326,7 @@ public:
         was_slow_ = "Full IMU loop was slow.";
         slow_count_++;
       }
-      getData(reading);
+      getData(imuReading, magReading);
       double endtime = ros::Time::now().toSec();
       if (endtime - starttime > 0.05)
       {
@@ -331,7 +336,8 @@ public:
       }
       prevtime = starttime;
       starttime = ros::Time::now().toSec();
-      imu_data_pub_.publish(reading);
+      imu_data_pub_.publish(imuReading);
+      imu_mag_pub_.publish(magReading);
       endtime = ros::Time::now().toSec();
       if (endtime - starttime > 0.05)
       {
@@ -401,7 +407,7 @@ public:
 
   void InterruptionTest(diagnostic_updater::DiagnosticStatusWrapper& status)
   {
-    if (imu_data_pub_.getNumSubscribers() == 0 )
+    if (imu_data_pub_.getNumSubscribers() == 0 && imu_mag_pub_.getNumSubscribers() == 0)
       status.summary(0, "No operation interrupted.");
     else
       status.summary(1, "There were active subscribers.  Running of self test interrupted operations.");
@@ -433,21 +439,26 @@ public:
   }
 
 
-  void getData(sensor_msgs::Imu& data)
+  void getData(sensor_msgs::Imu& imuData, geometry_msgs::Vector3Stamped &magData)
   {
     uint64_t time;
     double accel[3];
     double angrate[3];
+    double mag[3];
     double orientation[9];
 
-    imu.receiveAccelAngrateOrientation(&time, accel, angrate, orientation);
-    data.linear_acceleration.x = accel[0];
-    data.linear_acceleration.y = -accel[1];
-    data.linear_acceleration.z = -accel[2];
+    imu.receiveAccelAngrateMagOrientation(&time, accel, angrate, mag, orientation);
+    imuData.linear_acceleration.x = accel[0];
+    imuData.linear_acceleration.y = -accel[1];
+    imuData.linear_acceleration.z = -accel[2];
  
-    data.angular_velocity.x = angrate[0];
-    data.angular_velocity.y = -angrate[1];
-    data.angular_velocity.z = -angrate[2];
+    imuData.angular_velocity.x = angrate[0];
+    imuData.angular_velocity.y = -angrate[1];
+    imuData.angular_velocity.z = -angrate[2];
+
+    magData.vector.x = mag[0];
+    magData.vector.y = -mag[1];
+    magData.vector.z = -mag[2];
       
     tf::Matrix3x3 mat(orientation[0], orientation[3], orientation[6],
 		      orientation[1], orientation[4], orientation[7],
@@ -457,9 +468,21 @@ public:
     tf::Quaternion quat;
     mat.getRPY(r, p, y);
     quat.setRPY(r, -p, -y);
-    tf::quaternionTFToMsg(quat, data.orientation);
+    tf::quaternionTFToMsg(quat, imuData.orientation);
 
-    data.header.stamp = ros::Time::now().fromNSec(time);
+    tf::Transform trans;
+    quat.setRPY(r, -p, 0);
+    trans.setRotation(quat);
+    trans.setOrigin(tf::Vector3(0, 0, 0));
+    tf::Vector3 magRaw(mag[0], -mag[1], -mag[2]);
+    tf::Vector3 magTrans = trans * magRaw; // TODO: figure out why this isn't the inverse
+
+    magData.vector.x = magTrans.getX();
+    magData.vector.y = magTrans.getY();
+    magData.vector.z = magTrans.getZ();
+
+    imuData.header.stamp = ros::Time::now().fromNSec(time);
+    magData.header.stamp = ros::Time::now().fromNSec(time);
   }
 
 
@@ -652,7 +675,7 @@ public:
     imu.initGyros(&bias_x_, &bias_y_, &bias_z_);
     
     // check calibration
-    if (!imu.setContinuous(microstrain_3dmgx2_imu::IMU::CMD_ACCEL_ANGRATE_ORIENT)){
+    if (!imu.setContinuous(microstrain_3dmgx2_imu::IMU::CMD_ACCEL_ANGRATE_MAG_ORIENT)){
       ROS_ERROR("Could not start streaming data to verify calibration");
     } 
     else {
@@ -660,14 +683,14 @@ public:
       double y_rate = 0.0;
       double z_rate = 0.0;
       size_t count = 0;
-      getData(reading);
-      ros::Time start_time = reading.header.stamp;
+      getData(imuReading, magReading);
+      ros::Time start_time = imuReading.header.stamp;
 
-      while(reading.header.stamp - start_time < ros::Duration(2.0)){
-        getData(reading);
-        x_rate += reading.angular_velocity.x;
-        y_rate += reading.angular_velocity.y;
-        z_rate += reading.angular_velocity.z;
+      while(imuReading.header.stamp - start_time < ros::Duration(2.0)){
+        getData(imuReading, magReading);
+        x_rate += imuReading.angular_velocity.x;
+        y_rate += imuReading.angular_velocity.y;
+        z_rate += imuReading.angular_velocity.z;
         ++count;
       }
 
